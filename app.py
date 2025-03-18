@@ -3,114 +3,106 @@ import math
 import io
 import fitz  # PyMuPDF
 
-def create_4up_cut_stack_pdf(file_bytes: bytes) -> bytes:
+def create_doublesided_4up_imposed_pdf(file_bytes: bytes) -> bytes:
     """
-    Rearranges the pages of an input PDF into a 4-up layout on A4 paper.
-    Each A4 page is divided into four quadrants with a margin.
-    The pages are placed in "cut-and-stack" order:
-      - For each output sheet (index i), the quadrants are filled by pages:
-        i, i+total_sheets, i+2*total_sheets, i+3*total_sheets.
-    Each input page is scaled (preserving its aspect ratio) to fit inside its quadrant.
+    Creates a double-sided 4-up imposed PDF for cut-and-stack assembly.
+    
+    Each physical A4 sheet (when printed duplex) yields 2 pages:
+      • Front side quadrants (from top-left, top-right, bottom-left, bottom-right):
+          For sheet j: [2*j+1, (2*j+1)+gap, (2*j+1)+2*gap, (2*j+1)+3*gap]
+      • Back side quadrants:
+          For sheet j: [2*j+2, (2*j+2)+gap, (2*j+2)+2*gap, (2*j+2)+3*gap]
+    
+    Here gap = 2*(number_of_sheets) - 1, where number_of_sheets = ceil(total_pages/8).
+    This ordering makes, for example, a 101-page book impose as:
+      Front of sheet 0:  1, 26, 51, 76  
+      Back  of sheet 0:  2, 27, 52, 77  
+    (and so on)
     """
-    # A4 dimensions in points
+    # Open the input PDF
+    src_pdf = fitz.open(stream=file_bytes, filetype="pdf")
+    total_input = src_pdf.page_count
+    # If the total page count is odd, add a blank page (to make it even)
+    if total_input % 2 == 1:
+        total_input += 1
+
+    # Each physical sheet holds 8 mini pages (4 on the front, 4 on the back)
+    sheets = math.ceil(total_input / 8)
+    gap = 2 * sheets - 1  # gap between mini pages in a sheet
+
+    # A4 dimensions (points) and margin (points)
     A4_WIDTH = 595.0
     A4_HEIGHT = 842.0
-    margin = 10  # margin in points inside each quadrant
+    margin = 10
 
-    # Open the input PDF from bytes using PyMuPDF
-    input_pdf = fitz.open(stream=file_bytes, filetype="pdf")
-    num_pages = input_pdf.page_count
-
-    # Calculate how many A4 sheets are needed (each sheet holds 4 pages)
-    total_sheets = math.ceil(num_pages / 4)
-
-    # Prepare the output PDF document
-    output_pdf = fitz.open()
-
-    # Define the target quadrants (with margins) on an A4 sheet.
-    # The A4 page is divided into 4 equal parts:
-    #   - Quadrant 0 (top-left)
-    #   - Quadrant 1 (top-right)
-    #   - Quadrant 2 (bottom-left)
-    #   - Quadrant 3 (bottom-right)
-    # In a coordinate system where (0,0) is the bottom left:
-    quadrant_rects = [
+    # Define quadrant rectangles on an A4 page (coordinates: (x0, y0, x1, y1); origin at bottom-left)
+    quad_rects = [
         # Top-left quadrant:
-        fitz.Rect(margin,
-                  A4_HEIGHT/2 + margin,
-                  A4_WIDTH/2 - margin,
-                  A4_HEIGHT - margin),
+        fitz.Rect(margin, A4_HEIGHT/2 + margin, A4_WIDTH/2 - margin, A4_HEIGHT - margin),
         # Top-right quadrant:
-        fitz.Rect(A4_WIDTH/2 + margin,
-                  A4_HEIGHT/2 + margin,
-                  A4_WIDTH - margin,
-                  A4_HEIGHT - margin),
+        fitz.Rect(A4_WIDTH/2 + margin, A4_HEIGHT/2 + margin, A4_WIDTH - margin, A4_HEIGHT - margin),
         # Bottom-left quadrant:
-        fitz.Rect(margin,
-                  margin,
-                  A4_WIDTH/2 - margin,
-                  A4_HEIGHT/2 - margin),
+        fitz.Rect(margin, margin, A4_WIDTH/2 - margin, A4_HEIGHT/2 - margin),
         # Bottom-right quadrant:
-        fitz.Rect(A4_WIDTH/2 + margin,
-                  margin,
-                  A4_WIDTH - margin,
-                  A4_HEIGHT/2 - margin)
+        fitz.Rect(A4_WIDTH/2 + margin, margin, A4_WIDTH - margin, A4_HEIGHT/2 - margin)
     ]
 
-    # Process each A4 sheet (output page)
-    for sheet in range(total_sheets):
-        # Create a new blank A4 page in the output PDF.
-        output_page = output_pdf.new_page(width=A4_WIDTH, height=A4_HEIGHT)
+    # Create the output PDF
+    out_pdf = fitz.open()
 
-        # For each quadrant (0 to 3)
-        for q in range(4):
-            # Compute the corresponding input page index based on cut-and-stack ordering.
-            page_index = sheet + q * total_sheets
-            if page_index < num_pages:
-                # Load the input page.
-                src_page = input_pdf.load_page(page_index)
-                src_rect = src_page.rect  # source page dimensions
-                src_width = src_rect.width
-                src_height = src_rect.height
+    # For each physical sheet (indexed j = 0 ... sheets-1)
+    for j in range(sheets):
+        # Calculate front side page numbers for this sheet
+        front_q0 = 2 * j + 1
+        front_q1 = front_q0 + gap
+        front_q2 = front_q0 + 2 * gap
+        front_q3 = front_q0 + 3 * gap
+        front_pages = [front_q0, front_q1, front_q2, front_q3]
+        
+        # Create the front side page
+        front_page = out_pdf.new_page(width=A4_WIDTH, height=A4_HEIGHT)
+        for idx, p in enumerate(front_pages):
+            if p <= src_pdf.page_count:
+                front_page.show_pdf_page(quad_rects[idx], src_pdf, p - 1)
+        
+        # Calculate back side page numbers for this sheet
+        back_q0 = 2 * j + 2
+        back_q1 = back_q0 + gap
+        back_q2 = back_q0 + 2 * gap
+        back_q3 = back_q0 + 3 * gap
+        back_pages = [back_q0, back_q1, back_q2, back_q3]
+        
+        # Create the back side page
+        back_page = out_pdf.new_page(width=A4_WIDTH, height=A4_HEIGHT)
+        for idx, p in enumerate(back_pages):
+            if p <= src_pdf.page_count:
+                back_page.show_pdf_page(quad_rects[idx], src_pdf, p - 1)
+    
+    # Write the output PDF to bytes and return
+    output_buffer = io.BytesIO()
+    out_pdf.save(output_buffer)
+    output_buffer.seek(0)
+    return output_buffer.read()
 
-                # Get the target quadrant rectangle.
-                target_rect = quadrant_rects[q]
-
-                # Calculate the scale factor to fit the source page into the target quadrant
-                # while preserving the aspect ratio.
-                scale = min(target_rect.width / src_width, target_rect.height / src_height)
-                new_width = src_width * scale
-                new_height = src_height * scale
-
-                # Center the scaled page within the target quadrant.
-                new_x0 = target_rect.x0 + (target_rect.width - new_width) / 2
-                new_y0 = target_rect.y0 + (target_rect.height - new_height) / 2
-                new_rect = fitz.Rect(new_x0, new_y0, new_x0 + new_width, new_y0 + new_height)
-
-                # Draw the input page onto the output page in the calculated rectangle.
-                output_page.show_pdf_page(new_rect, input_pdf, page_index)
-
-    # Write the output PDF to bytes.
-    output_bytes = output_pdf.write()
-    return output_bytes
 
 def main():
-    st.title("Quarter-Size Booklet (4-up Cut-and-Stack) PDF Imposition")
+    st.title("Double-Sided 4-Up Imposition (Cut-and-Stack)")
     st.write("""
-    1. Upload a PDF.
-    2. This tool rearranges its pages into a 4-up (quarter of A4) layout in cut-and-stack order.
-    3. Download and print the result on A4 paper (double-sided).
-    4. After printing, cut horizontally and then vertically to obtain four stacks of quarter-sized pages in the proper order.
+    Upload a PDF and this tool will rearrange its pages into a double-sided 4-up layout.
+    
+    
+    When printed duplex on A4, cut along the midlines, and then stacked appropriately,
+    the mini pages will assemble into the correct reading order.
     """)
-
+    
     uploaded_file = st.file_uploader("Upload your PDF file", type=["pdf"])
     if uploaded_file is not None:
         file_bytes = uploaded_file.read()
-        output_pdf_bytes = create_4up_cut_stack_pdf(file_bytes)
+        output_pdf_bytes = create_doublesided_4up_imposed_pdf(file_bytes)
         st.download_button(
-            label="Download 4-up PDF",
+            label="Download Imposed PDF",
             data=output_pdf_bytes,
-            file_name="4up_booklet.pdf",
+            file_name="4up_doublesided_imposed.pdf",
             mime="application/pdf"
         )
 
